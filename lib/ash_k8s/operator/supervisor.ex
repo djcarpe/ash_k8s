@@ -88,6 +88,12 @@ defmodule AshK8s.Operator.Supervisor do
 
     children = leader_children ++ controller_children
 
+    :telemetry.execute(
+      [:ash_k8s, :operator, :init],
+      %{watch_count: length(watches)},
+      %{operator: op_name, domain: domain, leader_election: leader_election?}
+    )
+
     Supervisor.init(children, strategy: :one_for_one)
   end
 

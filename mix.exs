@@ -37,6 +37,7 @@ defmodule AshK8s.MixProject do
       {:yaml_elixir, "~> 2.9"},
       {:ymlr, "~> 5.0"},
       {:x509, "~> 0.8"},
+      {:telemetry, "~> 1.1"},
 
       # Dev/test
       {:ex_doc, "~> 0.34", only: :dev, runtime: false},

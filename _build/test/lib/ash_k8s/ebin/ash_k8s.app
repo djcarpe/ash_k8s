@@ -160,7 +160,7 @@
                         'Elixir.Mix.Tasks.AshK8s.Gen.Crds']},
               {optional_applications,[]},
               {applications,[kernel,stdlib,elixir,logger,ash,spark,req,jason,
-                             yaml_elixir,ymlr,x509,mox]},
+                             yaml_elixir,ymlr,x509,telemetry,mox]},
               {description,"Kubernetes operator and CRD framework built on Ash"},
               {registered,[]},
               {vsn,"0.1.0"}]}.

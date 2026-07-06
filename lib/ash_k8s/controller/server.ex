@@ -55,6 +55,7 @@ defmodule AshK8s.Controller.Server do
 
     state = %{
       resource: resource,
+      kind: Info.kind!(resource),
       controller: controller,
       domain: domain,
       client: client,
@@ -116,6 +117,12 @@ defmodule AshK8s.Controller.Server do
 
   def handle_info({:watch_event, {type, raw_object}}, state)
       when type in [:added, :modified, :deleted] do
+    :telemetry.execute(
+      [:ash_k8s, :watch, :event],
+      %{count: 1},
+      %{resource: state.resource, kind: state.kind, type: type}
+    )
+
     key = object_key(raw_object)
     state = enqueue(state, {type, raw_object, key})
     state = drain_queue(state)
@@ -154,6 +161,12 @@ defmodule AshK8s.Controller.Server do
       {:watch, tasks} ->
         Logger.warning(
           "[AshK8s] Watch for #{inspect(state.resource)} failed: #{inspect(reason)} — retrying in 5s"
+        )
+
+        :telemetry.execute(
+          [:ash_k8s, :watch, :failure],
+          %{count: 1},
+          %{resource: state.resource, kind: state.kind, reason: reason}
         )
 
         Process.send_after(self(), :start_watch, 5_000)
@@ -281,23 +294,43 @@ defmodule AshK8s.Controller.Server do
     Code.ensure_loaded?(controller) and function_exported?(controller, :finalize, 3)
   end
 
-  defp run_reconcile(state, raw_object, _key, event_type) do
-    resource_struct = raw_to_struct(state.resource, raw_object)
+  @doc false
+  # Public for testability of the emitted telemetry; not part of the API.
+  def run_reconcile(state, raw_object, _key, event_type) do
+    metadata = lifecycle_metadata(state, raw_object) |> Map.put(:event_type, event_type)
 
-    context = %{
-      domain: state.domain,
-      client: state.client,
-      namespace: get_in(raw_object, ["metadata", "namespace"]) || "default",
-      event_type: event_type,
-      opts: state.watch_opts
-    }
+    :telemetry.span([:ash_k8s, :reconcile], metadata, fn ->
+      resource_struct = raw_to_struct(state.resource, raw_object)
 
-    state.controller.reconcile(resource_struct, context, [])
+      context = %{
+        domain: state.domain,
+        client: state.client,
+        namespace: get_in(raw_object, ["metadata", "namespace"]) || "default",
+        event_type: event_type,
+        opts: state.watch_opts
+      }
+
+      result = state.controller.reconcile(resource_struct, context, [])
+      {result, Map.put(metadata, :result, result_kind(result))}
+    end)
   rescue
     e -> {:error, Exception.message(e)}
   end
 
-  defp run_finalize(state, raw_object, key) do
+  @doc false
+  # Public for testability of the emitted telemetry; not part of the API.
+  def run_finalize(state, raw_object, key) do
+    metadata = lifecycle_metadata(state, raw_object)
+
+    :telemetry.span([:ash_k8s, :finalize], metadata, fn ->
+      result = do_run_finalize(state, raw_object, key)
+      {result, Map.put(metadata, :result, result_kind(result))}
+    end)
+  rescue
+    e -> {:error, Exception.message(e)}
+  end
+
+  defp do_run_finalize(state, raw_object, key) do
     resource_struct = raw_to_struct(state.resource, raw_object)
 
     context = %{
@@ -372,6 +405,23 @@ defmodule AshK8s.Controller.Server do
     name = get_in(raw_object, ["metadata", "name"])
     if ns, do: "#{ns}/#{name}", else: name
   end
+
+  defp lifecycle_metadata(state, raw_object) do
+    %{
+      resource: state.resource,
+      kind: state[:kind] || Info.kind!(state.resource),
+      controller: state.controller,
+      namespace: get_in(raw_object, ["metadata", "namespace"]) || "default",
+      name: get_in(raw_object, ["metadata", "name"])
+    }
+  end
+
+  defp result_kind(:ok), do: :ok
+  defp result_kind({:ok, _}), do: :ok
+  defp result_kind({:requeue, _}), do: :requeue
+  defp result_kind({:deleted, _}), do: :ok
+  defp result_kind({:error, _}), do: :error
+  defp result_kind(_), do: :unknown
 
   defp finalizer_name(controller) do
     "#{@finalizer_prefix}/#{controller |> Module.split() |> List.last() |> Macro.underscore()}"
