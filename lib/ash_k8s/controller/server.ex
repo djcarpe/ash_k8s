@@ -211,7 +211,7 @@ defmodule AshK8s.Controller.Server do
     end
   end
 
-  defp start_reconcile_task(state, :deleted, _raw_object, key) do
+  defp start_reconcile_task(_state, :deleted, _raw_object, key) do
     # The object is gone from the API server. Finalizer-based cleanup (if
     # any) already ran while the object carried a deletionTimestamp.
     Task.async(fn -> {:deleted, key} end)

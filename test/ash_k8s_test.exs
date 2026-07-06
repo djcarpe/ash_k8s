@@ -113,8 +113,8 @@ defmodule AshK8sTest do
       assert AshK8s.Test.WidgetController.__ash_k8s_resource__() == AshK8s.Test.Widget
     end
 
-    test "controller has a default finalize/3 implementation" do
-      assert AshK8s.Test.WidgetController.finalize(%Widget{}, %{}, []) == :ok
+    test "controller has no default finalize/3 (finalizers are opt-in)" do
+      refute function_exported?(AshK8s.Test.WidgetController, :finalize, 3)
     end
   end
 
