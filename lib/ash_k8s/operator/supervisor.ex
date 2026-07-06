@@ -78,6 +78,7 @@ defmodule AshK8s.Operator.Supervisor do
           controller: watch.controller,
           domain: domain,
           client: client,
+          watch_namespace: opts[:watch_namespace],
           max_concurrent_reconciles: watch.max_concurrent_reconciles,
           requeue_on_error_delay: watch.requeue_on_error_delay
         )

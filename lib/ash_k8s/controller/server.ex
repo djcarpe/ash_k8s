@@ -55,6 +55,7 @@ defmodule AshK8s.Controller.Server do
       domain: domain,
       client: client,
       watch_opts: watch_opts,
+      watch_namespace: opts[:watch_namespace],
       resource_version: "0",
       queue: :queue.new(),
       active_tasks: %{},
@@ -65,18 +66,26 @@ defmodule AshK8s.Controller.Server do
     {:ok, state}
   end
 
+  @doc """
+  Resolves the list/watch path for a resource given the configured watch
+  namespace.
+
+  - cluster-scoped resources always watch at the cluster path
+  - `:all` (or `nil`) watches namespaced resources across all namespaces
+  - a namespace string watches that namespace only
+  """
+  @spec watch_path(module(), :all | String.t() | nil) :: String.t()
+  def watch_path(resource, watch_namespace) do
+    case {Info.scope!(resource), watch_namespace} do
+      {:cluster, _} -> Info.api_path!(resource)
+      {:namespaced, ns} when is_binary(ns) -> Info.namespaced_api_path!(resource, ns)
+      {:namespaced, _} -> Info.api_path!(resource)
+    end
+  end
+
   @impl true
   def handle_info(:start_watch, state) do
-    namespace = Client.Config |> struct() |> Map.get(:namespace, "default")
-
-    path =
-      case Info.scope!(state.resource) do
-        :namespaced ->
-          Info.namespaced_api_path!(state.resource, namespace)
-
-        :cluster ->
-          Info.api_path!(state.resource)
-      end
+    path = watch_path(state.resource, state.watch_namespace)
 
     watch_opts = Keyword.merge(state.watch_opts, resource_version: state.resource_version)
 
