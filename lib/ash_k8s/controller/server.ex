@@ -62,6 +62,7 @@ defmodule AshK8s.Controller.Server do
       watch_namespace: opts[:watch_namespace],
       resource_version: "0",
       queue: :queue.new(),
+      pending: %{},
       active_tasks: %{},
       max_concurrent: opts[:max_concurrent_reconciles] || 1
     }
@@ -173,8 +174,20 @@ defmodule AshK8s.Controller.Server do
 
   # ---- Private helpers ----
 
-  defp enqueue(state, event) do
-    %{state | queue: :queue.in(event, state.queue)}
+  # Events are deduplicated per object key: if an event for the key is
+  # already queued, only the stored payload is refreshed (latest object
+  # wins). Reconciliation is level-based, so collapsing a burst of events
+  # into one pending entry loses nothing — and bounds queue growth when a
+  # feedback loop or watch replay floods a single object.
+  defp enqueue(state, {type, raw_object, key}) do
+    queue =
+      if Map.has_key?(state.pending, key) do
+        state.queue
+      else
+        :queue.in(key, state.queue)
+      end
+
+    %{state | queue: queue, pending: Map.put(state.pending, key, {type, raw_object})}
   end
 
   defp drain_queue(%{active_tasks: tasks, max_concurrent: max} = state) do
@@ -193,8 +206,9 @@ defmodule AshK8s.Controller.Server do
       {:empty, _} ->
         state
 
-      {{:value, {type, raw_object, key}}, queue} ->
-        state = %{state | queue: queue}
+      {{:value, key}, queue} ->
+        {{type, raw_object}, pending} = Map.pop(state.pending, key)
+        state = %{state | queue: queue, pending: pending}
         task = start_reconcile_task(state, type, raw_object, key)
 
         state = %{
