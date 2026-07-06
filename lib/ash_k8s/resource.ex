@@ -116,7 +116,12 @@ defmodule AshK8s.Resource do
     name: :k8s,
     describe: "Kubernetes CRD configuration for this Ash resource.",
     schema: [
-      group: [type: :string, required: true, doc: "API group (e.g. `apps.example.com`). Use `\"\"` for the core Kubernetes API group (`/api/v1`)."],
+      group: [
+        type: :string,
+        required: true,
+        doc:
+          "API group (e.g. `apps.example.com`). Use `\"\"` for the core Kubernetes API group (`/api/v1`)."
+      ],
       version: [type: :string, default: "v1", doc: "API version."],
       scope: [
         type: {:one_of, [:namespaced, :cluster]},

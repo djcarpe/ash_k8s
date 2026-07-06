@@ -1,1 +1,10 @@
-{application,mox,[{modules,['Elixir.Mox','Elixir.Mox.Application','Elixir.Mox.UnexpectedCallError','Elixir.Mox.VerificationError']},{optional_applications,[]},{applications,[kernel,stdlib,elixir,logger,nimble_ownership]},{description,[77,111,99,107,115,32,97,110,100,32,101,120,112,108,105,99,105,116,32,99,111,110,116,114,97,99,116,115,32,102,111,114,32,69,108,105,120,105,114]},{registered,[]},{vsn,[49,46,50,46,48]},{mod,{'Elixir.Mox.Application',[]}}]}.
+{application,mox,
+             [{modules,['Elixir.Mox','Elixir.Mox.Application',
+                        'Elixir.Mox.UnexpectedCallError',
+                        'Elixir.Mox.VerificationError']},
+              {optional_applications,[]},
+              {applications,[kernel,stdlib,elixir,logger,nimble_ownership]},
+              {description,"Mocks and explicit contracts for Elixir"},
+              {registered,[]},
+              {vsn,"1.2.0"},
+              {mod,{'Elixir.Mox.Application',[]}}]}.

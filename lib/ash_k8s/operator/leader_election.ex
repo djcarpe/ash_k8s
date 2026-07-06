@@ -133,7 +133,8 @@ defmodule AshK8s.Operator.LeaderElection do
           "holderIdentity" => state.holder_identity,
           "leaseDurationSeconds" => duration_s,
           "renewTime" => now_iso,
-          "acquireTime" => if(holder != state.holder_identity, do: now_iso, else: spec["acquireTime"])
+          "acquireTime" =>
+            if(holder != state.holder_identity, do: now_iso, else: spec["acquireTime"])
         }
       }
 

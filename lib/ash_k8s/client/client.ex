@@ -50,6 +50,21 @@ defmodule AshK8s.Client do
     req |> Req.get(url: path) |> handle_response()
   end
 
+  @doc """
+  GETs a subresource that serves plain text (e.g. pod `/log`).
+
+  The default client sends `Accept: application/json`, which the API server
+  rejects for text-only subresources; this variant accepts anything and
+  returns the raw body.
+  """
+  @spec get_text(t(), String.t()) :: {:ok, binary()} | {:error, term()}
+  def get_text(%__MODULE__{req: req}, path) do
+    req
+    |> Req.merge(headers: [{"accept", "text/plain, */*"}])
+    |> Req.get(url: path)
+    |> handle_response()
+  end
+
   @doc "Lists Kubernetes objects at a path, with optional label selector."
   @spec list(t(), String.t(), keyword()) :: {:ok, map()} | {:error, term()}
   def list(%__MODULE__{req: req}, path, opts \\ []) do
@@ -106,7 +121,9 @@ defmodule AshK8s.Client do
   @doc "DELETEs a Kubernetes object."
   @spec delete(t(), String.t(), keyword()) :: {:ok, map()} | {:error, term()}
   def delete(%__MODULE__{req: req}, path, opts \\ []) do
-    params = if propagation = opts[:propagation_policy], do: %{propagationPolicy: propagation}, else: %{}
+    params =
+      if propagation = opts[:propagation_policy], do: %{propagationPolicy: propagation}, else: %{}
+
     req |> Req.delete(url: path, params: params) |> handle_response()
   end
 

@@ -217,7 +217,7 @@ defmodule AshK8s.Controller.Server do
     Task.async(fn -> {:deleted, key} end)
   end
 
-  defp start_reconcile_task(state, _type, raw_object, key) do
+  defp start_reconcile_task(state, type, raw_object, key) do
     case finalizer_action(state.controller, raw_object) do
       :finalize ->
         Task.async(fn -> run_finalize(state, raw_object, key) end)
@@ -228,13 +228,13 @@ defmodule AshK8s.Controller.Server do
       :add_finalizer ->
         Task.async(fn ->
           case add_finalizer(state, raw_object) do
-            {:ok, _} -> run_reconcile(state, raw_object, key)
+            {:ok, _} -> run_reconcile(state, raw_object, key, type)
             {:error, reason} -> {:error, {:add_finalizer, reason}}
           end
         end)
 
       :reconcile ->
-        Task.async(fn -> run_reconcile(state, raw_object, key) end)
+        Task.async(fn -> run_reconcile(state, raw_object, key, type) end)
     end
   end
 
@@ -267,13 +267,14 @@ defmodule AshK8s.Controller.Server do
     Code.ensure_loaded?(controller) and function_exported?(controller, :finalize, 3)
   end
 
-  defp run_reconcile(state, raw_object, _key) do
+  defp run_reconcile(state, raw_object, _key, event_type) do
     resource_struct = raw_to_struct(state.resource, raw_object)
 
     context = %{
       domain: state.domain,
       client: state.client,
       namespace: get_in(raw_object, ["metadata", "namespace"]) || "default",
+      event_type: event_type,
       opts: state.watch_opts
     }
 

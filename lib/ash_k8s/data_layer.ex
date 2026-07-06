@@ -20,7 +20,7 @@ defmodule AshK8s.DataLayer do
 
   1. A `:namespace` filter value on the query
   2. The `:namespace` key in query context (`query.context[:namespace]`)
-  3. The resolved config's default namespace
+  3. Otherwise the read lists across all namespaces
 
   ## Filtering
 
@@ -88,12 +88,14 @@ defmodule AshK8s.DataLayer do
   @impl true
   def run_query(query, resource) do
     client = get_client()
-    namespace = resolve_namespace(query, client)
 
     path =
-      case Info.scope!(resource) do
-        :namespaced -> Info.namespaced_api_path!(resource, namespace)
-        :cluster -> Info.api_path!(resource)
+      case {Info.scope!(resource), resolve_namespace(query, client)} do
+        {:namespaced, ns} when is_binary(ns) -> Info.namespaced_api_path!(resource, ns)
+        # No namespace requested: list across all namespaces (Ash reads
+        # return everything unless filtered).
+        {:namespaced, _} -> Info.api_path!(resource)
+        {:cluster, _} -> Info.api_path!(resource)
       end
 
     label_selector = build_label_selector(query)
@@ -172,6 +174,7 @@ defmodule AshK8s.DataLayer do
     # a bare {"status": ...} body without apiVersion/kind/metadata.
     if Map.keys(attrs) == [:status] do
       status_body = %{"status" => Map.get(attrs, :status, %{})}
+
       with {:ok, raw} <- Client.patch(client, path <> "/status", status_body) do
         {:ok, raw_to_struct(resource, raw)}
       end
@@ -219,7 +222,7 @@ defmodule AshK8s.DataLayer do
 
   defp resolve_namespace(%Query{namespace: ns}, _client) when is_binary(ns), do: ns
   defp resolve_namespace(%Query{tenant: ns}, _client) when is_binary(ns), do: ns
-  defp resolve_namespace(_, client), do: resolve_default_namespace(client)
+  defp resolve_namespace(_, _client), do: nil
 
   defp resolve_namespace_from_changeset(changeset, client) do
     attrs = changeset.attributes
@@ -270,7 +273,10 @@ defmodule AshK8s.DataLayer do
     struct!(resource_module, filtered)
   rescue
     e ->
-      Logger.warning("AshK8s: failed to cast raw object to #{inspect(resource_module)}: #{inspect(e)}")
+      Logger.warning(
+        "AshK8s: failed to cast raw object to #{inspect(resource_module)}: #{inspect(e)}"
+      )
+
       struct(resource_module)
   end
 
@@ -308,6 +314,7 @@ defmodule AshK8s.DataLayer do
   defp apply_in_memory_filter(records, _query), do: records
 
   defp apply_sort(records, %Query{sort: nil}), do: records
+
   defp apply_sort(records, %Query{sort: sort}) do
     Enum.sort_by(records, fn record ->
       Enum.map(sort, fn {key, _dir} -> Map.get(record, key) end)

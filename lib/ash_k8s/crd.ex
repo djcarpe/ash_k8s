@@ -127,7 +127,7 @@ defmodule AshK8s.CRD do
     %{
       "type" => "object",
       "properties" => %{
-        "spec"   => properties_for_spec(properties),
+        "spec" => properties_for_spec(properties),
         "status" => %{"type" => "object", "x-kubernetes-preserve-unknown-fields" => true}
       }
     }
@@ -142,7 +142,11 @@ defmodule AshK8s.CRD do
       |> Map.drop(metadata_keys)
 
     if map_size(spec_props) > 0 do
-      %{"type" => "object", "properties" => spec_props, "x-kubernetes-preserve-unknown-fields" => true}
+      %{
+        "type" => "object",
+        "properties" => spec_props,
+        "x-kubernetes-preserve-unknown-fields" => true
+      }
     else
       %{"type" => "object", "x-kubernetes-preserve-unknown-fields" => true}
     end
@@ -157,15 +161,22 @@ defmodule AshK8s.CRD do
   defp ash_type_to_openapi(Ash.Type.Decimal, _attr), do: %{"type" => "number"}
   defp ash_type_to_openapi(Ash.Type.Boolean, _attr), do: %{"type" => "boolean"}
   defp ash_type_to_openapi(:boolean, _attr), do: %{"type" => "boolean"}
-  defp ash_type_to_openapi(Ash.Type.Map, _attr), do: %{"type" => "object", "x-kubernetes-preserve-unknown-fields" => true}
-  defp ash_type_to_openapi(:map, _attr), do: %{"type" => "object", "x-kubernetes-preserve-unknown-fields" => true}
+
+  defp ash_type_to_openapi(Ash.Type.Map, _attr),
+    do: %{"type" => "object", "x-kubernetes-preserve-unknown-fields" => true}
+
+  defp ash_type_to_openapi(:map, _attr),
+    do: %{"type" => "object", "x-kubernetes-preserve-unknown-fields" => true}
 
   defp ash_type_to_openapi({:array, inner_type}, attr) do
     %{"type" => "array", "items" => ash_type_to_openapi(inner_type, attr)}
   end
 
   defp ash_type_to_openapi(Ash.Type.UUID, _attr), do: %{"type" => "string", "format" => "uuid"}
-  defp ash_type_to_openapi(Ash.Type.DateTime, _attr), do: %{"type" => "string", "format" => "date-time"}
+
+  defp ash_type_to_openapi(Ash.Type.DateTime, _attr),
+    do: %{"type" => "string", "format" => "date-time"}
+
   defp ash_type_to_openapi(Ash.Type.Date, _attr), do: %{"type" => "string", "format" => "date"}
   defp ash_type_to_openapi(Ash.Type.Atom, _attr), do: %{"type" => "string"}
   defp ash_type_to_openapi(:atom, _attr), do: %{"type" => "string"}
