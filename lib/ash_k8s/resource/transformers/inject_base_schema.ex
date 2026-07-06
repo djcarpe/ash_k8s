@@ -52,8 +52,9 @@ defmodule AshK8s.Resource.Transformers.InjectBaseSchema do
   end
 
   defp inject_actions(dsl_state) do
-    with {:ok, dsl_state} <- Builder.add_new_action(dsl_state, :read, :read),
-         {:ok, dsl_state} <- Builder.add_new_action(dsl_state, :destroy, :destroy),
+    with {:ok, dsl_state} <- Builder.add_new_action(dsl_state, :read, :read, primary?: true),
+         {:ok, dsl_state} <-
+           Builder.add_new_action(dsl_state, :destroy, :destroy, primary?: true),
          {:ok, dsl_state} <-
            Builder.add_new_action(dsl_state, :create, :create,
              accept: [:name, :namespace, :spec, :labels, :annotations],

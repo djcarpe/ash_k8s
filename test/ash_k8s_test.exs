@@ -116,6 +116,13 @@ defmodule AshK8sTest do
     test "controller has no default finalize/3 (finalizers are opt-in)" do
       refute function_exported?(AshK8s.Test.WidgetController, :finalize, 3)
     end
+
+    test "resources get primary read/create/update/destroy actions" do
+      for type <- [:read, :create, :update, :destroy] do
+        action = Ash.Resource.Info.primary_action(Widget, type)
+        assert action, "no primary #{type} action injected"
+      end
+    end
   end
 
   describe "AshK8s.Client.Config" do
