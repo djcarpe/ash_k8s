@@ -43,6 +43,10 @@ defmodule AshK8s.Controller.Server do
 
   @impl true
   def init(opts) do
+    # Watch and reconcile tasks are linked (Task.async); trap exits so a
+    # crashing task is handled via :DOWN instead of killing the server.
+    Process.flag(:trap_exit, true)
+
     resource = opts[:resource]
     controller = opts[:controller]
     domain = opts[:domain]
@@ -146,6 +150,14 @@ defmodule AshK8s.Controller.Server do
         state = drain_queue(state)
         {:noreply, state}
 
+      {:watch, tasks} ->
+        Logger.warning(
+          "[AshK8s] Watch for #{inspect(state.resource)} failed: #{inspect(reason)} — retrying in 5s"
+        )
+
+        Process.send_after(self(), :start_watch, 5_000)
+        {:noreply, %{state | active_tasks: tasks}}
+
       _ ->
         {:noreply, state}
     end
@@ -188,27 +200,71 @@ defmodule AshK8s.Controller.Server do
         state = %{
           state
           | active_tasks:
-              Map.put(state.active_tasks, task.ref, {:reconcile, key, raw_object, state.controller})
+              Map.put(
+                state.active_tasks,
+                task.ref,
+                {:reconcile, key, raw_object, state.controller}
+              )
         }
 
         drain_queue(state)
     end
   end
 
-  defp start_reconcile_task(state, :deleted, raw_object, key) do
-    Task.async(fn ->
-      if has_finalizer?(raw_object, finalizer_name(state.controller)) do
-        run_finalize(state, raw_object, key)
-      else
-        {:deleted, key}
-      end
-    end)
+  defp start_reconcile_task(state, :deleted, _raw_object, key) do
+    # The object is gone from the API server. Finalizer-based cleanup (if
+    # any) already ran while the object carried a deletionTimestamp.
+    Task.async(fn -> {:deleted, key} end)
   end
 
   defp start_reconcile_task(state, _type, raw_object, key) do
-    Task.async(fn ->
-      run_reconcile(state, raw_object, key)
-    end)
+    case finalizer_action(state.controller, raw_object) do
+      :finalize ->
+        Task.async(fn -> run_finalize(state, raw_object, key) end)
+
+      :skip_deleted ->
+        Task.async(fn -> {:deleted, key} end)
+
+      :add_finalizer ->
+        Task.async(fn ->
+          case add_finalizer(state, raw_object) do
+            {:ok, _} -> run_reconcile(state, raw_object, key)
+            {:error, reason} -> {:error, {:add_finalizer, reason}}
+          end
+        end)
+
+      :reconcile ->
+        Task.async(fn -> run_reconcile(state, raw_object, key) end)
+    end
+  end
+
+  @doc false
+  # Decides how to handle an :added/:modified event with respect to the
+  # controller's finalizer:
+  #
+  #   * object being deleted + our finalizer present  -> :finalize
+  #   * object being deleted, finalizer absent        -> :skip_deleted
+  #   * controller finalizes but finalizer not yet on -> :add_finalizer
+  #   * otherwise                                     -> :reconcile
+  @spec finalizer_action(module(), map()) ::
+          :finalize | :skip_deleted | :add_finalizer | :reconcile
+  def finalizer_action(controller, raw_object) do
+    finalizer = finalizer_name(controller)
+
+    cond do
+      get_in(raw_object, ["metadata", "deletionTimestamp"]) ->
+        if has_finalizer?(raw_object, finalizer), do: :finalize, else: :skip_deleted
+
+      finalizable?(controller) and not has_finalizer?(raw_object, finalizer) ->
+        :add_finalizer
+
+      true ->
+        :reconcile
+    end
+  end
+
+  defp finalizable?(controller) do
+    Code.ensure_loaded?(controller) and function_exported?(controller, :finalize, 3)
   end
 
   defp run_reconcile(state, raw_object, _key) do
@@ -251,7 +307,9 @@ defmodule AshK8s.Controller.Server do
 
   defp handle_reconcile_result(state, :ok, _key, _raw_object, _controller), do: state
   defp handle_reconcile_result(state, {:ok, _}, _key, _raw_object, _controller), do: state
-  defp handle_reconcile_result(state, {:deleted, _deleted_key}, _key, _raw_object, _controller), do: state
+
+  defp handle_reconcile_result(state, {:deleted, _deleted_key}, _key, _raw_object, _controller),
+    do: state
 
   defp handle_reconcile_result(state, {:requeue, delay}, key, raw_object, _controller) do
     schedule_requeue(key, raw_object, delay)
@@ -309,13 +367,21 @@ defmodule AshK8s.Controller.Server do
     finalizer in finalizers
   end
 
+  defp add_finalizer(state, raw_object) do
+    finalizer = finalizer_name(state.controller)
+    metadata = raw_object["metadata"] || %{}
+    patch_finalizers(state, metadata, (metadata["finalizers"] || []) ++ [finalizer])
+  end
+
   defp remove_finalizer(state, raw_object, _key) do
     finalizer = finalizer_name(state.controller)
     metadata = raw_object["metadata"] || %{}
-    finalizers = (metadata["finalizers"] || []) -- [finalizer]
+    patch_finalizers(state, metadata, (metadata["finalizers"] || []) -- [finalizer])
+  end
+
+  defp patch_finalizers(state, metadata, finalizers) do
     name = metadata["name"]
     namespace = metadata["namespace"]
-    resource_version = metadata["resourceVersion"]
 
     path =
       case Info.scope!(state.resource) do
@@ -329,7 +395,7 @@ defmodule AshK8s.Controller.Server do
     patch_body = %{
       "metadata" => %{
         "finalizers" => finalizers,
-        "resourceVersion" => resource_version
+        "resourceVersion" => metadata["resourceVersion"]
       }
     }
 
