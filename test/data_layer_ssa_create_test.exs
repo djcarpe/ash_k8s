@@ -111,6 +111,40 @@ defmodule AshK8s.DataLayerSSACreateTest do
     assert req.body["metadata"]["ownerReferences"] == [owner]
   end
 
+  test "data-bearing objects (ConfigMap/Secret) carry data/stringData/type, not spec" do
+    {:ok, _record} =
+      Widget
+      |> Ash.Changeset.for_create(:create, %{
+        name: "w1",
+        namespace: "default",
+        data: %{"config.toml" => "x = 1"},
+        string_data: %{"password" => "hunter2"},
+        type: "Opaque"
+      })
+      |> Ash.create()
+
+    assert_received %{} = req
+    assert req.body["data"] == %{"config.toml" => "x = 1"}
+    assert req.body["stringData"] == %{"password" => "hunter2"}
+    assert req.body["type"] == "Opaque"
+    # No empty spec should be emitted for a data-bearing object.
+    refute Map.has_key?(req.body, "spec")
+  end
+
+  test "spec is included when non-empty (workload objects)" do
+    {:ok, _record} =
+      Widget
+      |> Ash.Changeset.for_create(:create, %{
+        name: "w1",
+        namespace: "default",
+        spec: %{"replicas" => 3}
+      })
+      |> Ash.create()
+
+    assert_received %{} = req
+    assert req.body["spec"] == %{"replicas" => 3}
+  end
+
   test "the field manager is overridable via changeset context" do
     {:ok, _record} =
       Widget

@@ -274,7 +274,11 @@ defmodule AshK8s.DataLayer do
       annotations: metadata["annotations"] || %{},
       owner_references: metadata["ownerReferences"] || [],
       spec: spec,
-      status: status
+      status: status,
+      # Data-bearing kinds (ConfigMap/Secret). stringData is write-only and not
+      # returned by the API server, so it is not read back here.
+      data: raw["data"],
+      type: raw["type"]
     }
 
     resource_attrs = Ash.Resource.Info.attributes(resource_module)
@@ -301,15 +305,30 @@ defmodule AshK8s.DataLayer do
       }
       |> maybe_put_owner_references(attrs)
 
-    base = %{
+    %{
       "apiVersion" => Info.api_version!(resource),
       "kind" => Info.kind!(resource),
-      "metadata" => metadata,
-      "spec" => Map.get(attrs, :spec) || %{}
+      "metadata" => metadata
     }
-
-    maybe_put_status(base, attrs)
+    |> maybe_put_spec(attrs)
+    |> maybe_put("data", Map.get(attrs, :data))
+    |> maybe_put("stringData", Map.get(attrs, :string_data))
+    |> maybe_put("type", Map.get(attrs, :type))
+    |> maybe_put_status(attrs)
   end
+
+  # Include `spec` only when non-empty. Objects like ConfigMap/Secret have no
+  # spec — they carry top-level data/stringData/type instead, and emitting an
+  # empty `spec` would be rejected by strict server-side apply.
+  defp maybe_put_spec(body, attrs) do
+    case Map.get(attrs, :spec) do
+      spec when is_map(spec) and map_size(spec) > 0 -> Map.put(body, "spec", spec)
+      _ -> body
+    end
+  end
+
+  defp maybe_put(body, _key, nil), do: body
+  defp maybe_put(body, key, value), do: Map.put(body, key, value)
 
   defp maybe_put_owner_references(metadata, attrs) do
     case Map.get(attrs, :owner_references) do
