@@ -269,8 +269,10 @@ defmodule AshK8s.DataLayer do
       uid: metadata["uid"],
       resource_version: metadata["resourceVersion"],
       generation: metadata["generation"],
+      creation_timestamp: metadata["creationTimestamp"],
       labels: metadata["labels"] || %{},
       annotations: metadata["annotations"] || %{},
+      owner_references: metadata["ownerReferences"] || [],
       spec: spec,
       status: status
     }
@@ -290,19 +292,30 @@ defmodule AshK8s.DataLayer do
   end
 
   defp build_body(resource, attrs, name, namespace) do
-    base = %{
-      "apiVersion" => Info.api_version!(resource),
-      "kind" => Info.kind!(resource),
-      "metadata" => %{
+    metadata =
+      %{
         "name" => name,
         "namespace" => namespace,
         "labels" => Map.get(attrs, :labels) || %{},
         "annotations" => Map.get(attrs, :annotations) || %{}
-      },
+      }
+      |> maybe_put_owner_references(attrs)
+
+    base = %{
+      "apiVersion" => Info.api_version!(resource),
+      "kind" => Info.kind!(resource),
+      "metadata" => metadata,
       "spec" => Map.get(attrs, :spec) || %{}
     }
 
     maybe_put_status(base, attrs)
+  end
+
+  defp maybe_put_owner_references(metadata, attrs) do
+    case Map.get(attrs, :owner_references) do
+      refs when is_list(refs) and refs != [] -> Map.put(metadata, "ownerReferences", refs)
+      _ -> metadata
+    end
   end
 
   defp maybe_put_status(body, attrs) do

@@ -87,6 +87,30 @@ defmodule AshK8s.DataLayerSSACreateTest do
     assert req.body["spec"] == %{"replicas" => 2}
   end
 
+  test "owner references are carried into metadata.ownerReferences" do
+    owner = %{
+      "apiVersion" => "widgets.example.com/v1",
+      "kind" => "Widget",
+      "name" => "parent",
+      "uid" => "parent-uid",
+      "controller" => true,
+      "blockOwnerDeletion" => true
+    }
+
+    {:ok, _record} =
+      Widget
+      |> Ash.Changeset.for_create(:create, %{
+        name: "w1",
+        namespace: "default",
+        spec: %{},
+        owner_references: [owner]
+      })
+      |> Ash.create()
+
+    assert_received %{} = req
+    assert req.body["metadata"]["ownerReferences"] == [owner]
+  end
+
   test "the field manager is overridable via changeset context" do
     {:ok, _record} =
       Widget

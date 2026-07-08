@@ -37,9 +37,11 @@ defmodule AshK8s.Resource.Transformers.InjectBaseSchema do
     {:status, :map, [default: %{}, public?: true]},
     {:labels, :map, [default: %{}, public?: true]},
     {:annotations, :map, [default: %{}, public?: true]},
+    {:owner_references, {:array, :map}, [default: [], public?: true]},
     {:resource_version, :string, [public?: true]},
     {:uid, :string, [public?: true]},
-    {:generation, :integer, [public?: true]}
+    {:generation, :integer, [public?: true]},
+    {:creation_timestamp, :string, [public?: true]}
   ]
 
   defp inject_attributes(dsl_state) do
@@ -57,7 +59,7 @@ defmodule AshK8s.Resource.Transformers.InjectBaseSchema do
            Builder.add_new_action(dsl_state, :destroy, :destroy, primary?: true),
          {:ok, dsl_state} <-
            Builder.add_new_action(dsl_state, :create, :create,
-             accept: [:name, :namespace, :spec, :labels, :annotations],
+             accept: [:name, :namespace, :spec, :labels, :annotations, :owner_references],
              primary?: true
            ),
          {:ok, dsl_state} <-
