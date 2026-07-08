@@ -127,15 +127,24 @@ defmodule AshK8s.DataLayer do
 
     body = build_body(resource, attrs, name, namespace)
 
-    path =
-      case Info.scope!(resource) do
-        :namespaced -> Info.namespaced_api_path!(resource, namespace)
-        :cluster -> Info.api_path!(resource)
-      end
+    # Server-side apply (create-or-update by object name) rather than a plain
+    # POST. A POST 409s when the object already exists, which makes it unusable
+    # from an operator reconcile that runs on every watch event. SSA is
+    # idempotent: applying the same desired state repeatedly is a no-op, and
+    # the field manager scopes ownership to fields this manager sets.
+    path = object_path(resource, namespace, name)
+    field_manager = field_manager(changeset)
 
-    with {:ok, raw} <- Client.create(client, path, body) do
+    with {:ok, raw} <- Client.apply(client, path, body, field_manager: field_manager, force: true) do
       {:ok, raw_to_struct(resource, raw)}
     end
+  end
+
+  # Field manager for server-side apply: per-changeset override wins, then the
+  # `:ash_k8s, :field_manager` app env, then the client default.
+  defp field_manager(changeset) do
+    Map.get(changeset.context || %{}, :field_manager) ||
+      Application.get_env(:ash_k8s, :field_manager, "ash-k8s")
   end
 
   # ---- Update ----
