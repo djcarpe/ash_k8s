@@ -339,8 +339,12 @@ defmodule AshK8s.DataLayer do
 
   defp maybe_put_status(body, attrs) do
     case Map.get(attrs, :status) do
-      nil -> body
-      status -> Map.put(body, "status", status)
+      # Omit an empty status: the `:status` attribute defaults to %{}, and
+      # emitting `status: {}` fails server-side apply for spec-less kinds
+      # (ConfigMap/Secret) whose schema declares no status field. Real status
+      # is written via the /status subresource patch, not on create.
+      status when is_map(status) and map_size(status) > 0 -> Map.put(body, "status", status)
+      _ -> body
     end
   end
 

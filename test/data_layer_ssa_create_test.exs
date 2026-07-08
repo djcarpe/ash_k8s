@@ -127,8 +127,10 @@ defmodule AshK8s.DataLayerSSACreateTest do
     assert req.body["data"] == %{"config.toml" => "x = 1"}
     assert req.body["stringData"] == %{"password" => "hunter2"}
     assert req.body["type"] == "Opaque"
-    # No empty spec should be emitted for a data-bearing object.
+    # No empty spec/status should be emitted for a data-bearing object — a
+    # spec-less kind's schema (ConfigMap/Secret) rejects both under strict SSA.
     refute Map.has_key?(req.body, "spec")
+    refute Map.has_key?(req.body, "status")
   end
 
   test "spec is included when non-empty (workload objects)" do
