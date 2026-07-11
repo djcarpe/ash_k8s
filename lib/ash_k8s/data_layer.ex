@@ -20,7 +20,7 @@ defmodule AshK8s.DataLayer do
 
   1. A `:namespace` filter value on the query
   2. The `:namespace` key in query context (`query.context[:namespace]`)
-  3. The resolved config's default namespace
+  3. Otherwise the read lists across all namespaces
 
   ## Filtering
 
@@ -88,12 +88,14 @@ defmodule AshK8s.DataLayer do
   @impl true
   def run_query(query, resource) do
     client = get_client()
-    namespace = resolve_namespace(query, client)
 
     path =
-      case Info.scope!(resource) do
-        :namespaced -> Info.namespaced_api_path!(resource, namespace)
-        :cluster -> Info.api_path!(resource)
+      case {Info.scope!(resource), resolve_namespace(query, client)} do
+        {:namespaced, ns} when is_binary(ns) -> Info.namespaced_api_path!(resource, ns)
+        # No namespace requested: list across all namespaces (Ash reads
+        # return everything unless filtered).
+        {:namespaced, _} -> Info.api_path!(resource)
+        {:cluster, _} -> Info.api_path!(resource)
       end
 
     label_selector = build_label_selector(query)
@@ -125,15 +127,24 @@ defmodule AshK8s.DataLayer do
 
     body = build_body(resource, attrs, name, namespace)
 
-    path =
-      case Info.scope!(resource) do
-        :namespaced -> Info.namespaced_api_path!(resource, namespace)
-        :cluster -> Info.api_path!(resource)
-      end
+    # Server-side apply (create-or-update by object name) rather than a plain
+    # POST. A POST 409s when the object already exists, which makes it unusable
+    # from an operator reconcile that runs on every watch event. SSA is
+    # idempotent: applying the same desired state repeatedly is a no-op, and
+    # the field manager scopes ownership to fields this manager sets.
+    path = object_path(resource, namespace, name)
+    field_manager = field_manager(changeset)
 
-    with {:ok, raw} <- Client.create(client, path, body) do
+    with {:ok, raw} <- Client.apply(client, path, body, field_manager: field_manager, force: true) do
       {:ok, raw_to_struct(resource, raw)}
     end
+  end
+
+  # Field manager for server-side apply: per-changeset override wins, then the
+  # `:ash_k8s, :field_manager` app env, then the client default.
+  defp field_manager(changeset) do
+    Map.get(changeset.context || %{}, :field_manager) ||
+      Application.get_env(:ash_k8s, :field_manager, "ash-k8s")
   end
 
   # ---- Update ----
@@ -172,6 +183,7 @@ defmodule AshK8s.DataLayer do
     # a bare {"status": ...} body without apiVersion/kind/metadata.
     if Map.keys(attrs) == [:status] do
       status_body = %{"status" => Map.get(attrs, :status, %{})}
+
       with {:ok, raw} <- Client.patch(client, path <> "/status", status_body) do
         {:ok, raw_to_struct(resource, raw)}
       end
@@ -219,7 +231,7 @@ defmodule AshK8s.DataLayer do
 
   defp resolve_namespace(%Query{namespace: ns}, _client) when is_binary(ns), do: ns
   defp resolve_namespace(%Query{tenant: ns}, _client) when is_binary(ns), do: ns
-  defp resolve_namespace(_, client), do: resolve_default_namespace(client)
+  defp resolve_namespace(_, _client), do: nil
 
   defp resolve_namespace_from_changeset(changeset, client) do
     attrs = changeset.attributes
@@ -257,10 +269,16 @@ defmodule AshK8s.DataLayer do
       uid: metadata["uid"],
       resource_version: metadata["resourceVersion"],
       generation: metadata["generation"],
+      creation_timestamp: metadata["creationTimestamp"],
       labels: metadata["labels"] || %{},
       annotations: metadata["annotations"] || %{},
+      owner_references: metadata["ownerReferences"] || [],
       spec: spec,
-      status: status
+      status: status,
+      # Data-bearing kinds (ConfigMap/Secret). stringData is write-only and not
+      # returned by the API server, so it is not read back here.
+      data: raw["data"],
+      type: raw["type"]
     }
 
     resource_attrs = Ash.Resource.Info.attributes(resource_module)
@@ -270,30 +288,63 @@ defmodule AshK8s.DataLayer do
     struct!(resource_module, filtered)
   rescue
     e ->
-      Logger.warning("AshK8s: failed to cast raw object to #{inspect(resource_module)}: #{inspect(e)}")
+      Logger.warning(
+        "AshK8s: failed to cast raw object to #{inspect(resource_module)}: #{inspect(e)}"
+      )
+
       struct(resource_module)
   end
 
   defp build_body(resource, attrs, name, namespace) do
-    base = %{
-      "apiVersion" => Info.api_version!(resource),
-      "kind" => Info.kind!(resource),
-      "metadata" => %{
+    metadata =
+      %{
         "name" => name,
         "namespace" => namespace,
         "labels" => Map.get(attrs, :labels) || %{},
         "annotations" => Map.get(attrs, :annotations) || %{}
-      },
-      "spec" => Map.get(attrs, :spec) || %{}
-    }
+      }
+      |> maybe_put_owner_references(attrs)
 
-    maybe_put_status(base, attrs)
+    %{
+      "apiVersion" => Info.api_version!(resource),
+      "kind" => Info.kind!(resource),
+      "metadata" => metadata
+    }
+    |> maybe_put_spec(attrs)
+    |> maybe_put("data", Map.get(attrs, :data))
+    |> maybe_put("stringData", Map.get(attrs, :string_data))
+    |> maybe_put("type", Map.get(attrs, :type))
+    |> maybe_put_status(attrs)
+  end
+
+  # Include `spec` only when non-empty. Objects like ConfigMap/Secret have no
+  # spec — they carry top-level data/stringData/type instead, and emitting an
+  # empty `spec` would be rejected by strict server-side apply.
+  defp maybe_put_spec(body, attrs) do
+    case Map.get(attrs, :spec) do
+      spec when is_map(spec) and map_size(spec) > 0 -> Map.put(body, "spec", spec)
+      _ -> body
+    end
+  end
+
+  defp maybe_put(body, _key, nil), do: body
+  defp maybe_put(body, key, value), do: Map.put(body, key, value)
+
+  defp maybe_put_owner_references(metadata, attrs) do
+    case Map.get(attrs, :owner_references) do
+      refs when is_list(refs) and refs != [] -> Map.put(metadata, "ownerReferences", refs)
+      _ -> metadata
+    end
   end
 
   defp maybe_put_status(body, attrs) do
     case Map.get(attrs, :status) do
-      nil -> body
-      status -> Map.put(body, "status", status)
+      # Omit an empty status: the `:status` attribute defaults to %{}, and
+      # emitting `status: {}` fails server-side apply for spec-less kinds
+      # (ConfigMap/Secret) whose schema declares no status field. Real status
+      # is written via the /status subresource patch, not on create.
+      status when is_map(status) and map_size(status) > 0 -> Map.put(body, "status", status)
+      _ -> body
     end
   end
 
@@ -308,6 +359,7 @@ defmodule AshK8s.DataLayer do
   defp apply_in_memory_filter(records, _query), do: records
 
   defp apply_sort(records, %Query{sort: nil}), do: records
+
   defp apply_sort(records, %Query{sort: sort}) do
     Enum.sort_by(records, fn record ->
       Enum.map(sort, fn {key, _dir} -> Map.get(record, key) end)

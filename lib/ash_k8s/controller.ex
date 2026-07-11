@@ -59,10 +59,10 @@ defmodule AshK8s.Controller do
 
       def __ash_k8s_resource__, do: @ash_k8s_resource
 
-      @impl AshK8s.Controller.Behaviour
-      def finalize(_resource, _context, _opts), do: :ok
-
-      defoverridable finalize: 3
+      # NOTE: no default finalize/3 is injected on purpose. Exporting
+      # finalize/3 is what makes the server add a finalizer to every watched
+      # object, and a finalizer blocks deletion whenever the operator is
+      # down. Controllers opt in by implementing finalize/3 themselves.
 
       def child_spec(opts) do
         AshK8s.Controller.Server.child_spec(

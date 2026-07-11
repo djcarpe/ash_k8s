@@ -97,7 +97,12 @@ defmodule AshK8s.Client.Config do
       namespace = context["context"]["namespace"] || "default"
 
       host = cluster_info["server"]
-      ca_cert = decode_or_read(cluster_info["certificate-authority-data"], cluster_info["certificate-authority"])
+
+      ca_cert =
+        decode_or_read(
+          cluster_info["certificate-authority-data"],
+          cluster_info["certificate-authority"]
+        )
 
       auth =
         cond do

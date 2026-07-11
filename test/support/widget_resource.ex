@@ -7,22 +7,22 @@ defmodule AshK8s.Test.Widget do
     data_layer: AshK8s.DataLayer
 
   k8s do
-    group "widgets.example.com"
-    version "v1"
-    scope :namespaced
-    short_names ["w", "wg"]
-    categories ["all"]
+    group("widgets.example.com")
+    version("v1")
+    scope(:namespaced)
+    short_names(["w", "wg"])
+    categories(["all"])
 
     printer_columns do
-      column "PHASE", json_path: ".status.phase"
-      column "REPLICAS", json_path: ".spec.replicas", type: "integer"
-      column "AGE", json_path: ".metadata.creationTimestamp", type: "date"
+      column("PHASE", json_path: ".status.phase")
+      column("REPLICAS", json_path: ".spec.replicas", type: "integer")
+      column("AGE", json_path: ".metadata.creationTimestamp", type: "date")
     end
 
     status do
-      enabled true
-      condition "Ready", description: "Widget is reconciled"
-      condition "Degraded", description: "Widget has errors"
+      enabled(true)
+      condition("Ready", description: "Widget is reconciled")
+      condition("Degraded", description: "Widget has errors")
     end
   end
 end
@@ -37,11 +37,12 @@ defmodule AshK8s.Test.WidgetDomain do
   operator do
     name "widget-operator"
     namespace "default"
-    leader_election? false
+    leader_election?(false)
 
     watches do
-      watch AshK8s.Test.Widget,
+      watch(AshK8s.Test.Widget,
         controller: AshK8s.Test.WidgetController
+      )
     end
   end
 

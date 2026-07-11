@@ -37,6 +37,7 @@ defmodule AshK8s.MixProject do
       {:yaml_elixir, "~> 2.9"},
       {:ymlr, "~> 5.0"},
       {:x509, "~> 0.8"},
+      {:telemetry, "~> 1.1"},
 
       # Dev/test
       {:ex_doc, "~> 0.34", only: :dev, runtime: false},
@@ -53,11 +54,11 @@ defmodule AshK8s.MixProject do
       extras: ["README.md", "CHANGELOG.md"],
       groups_for_modules: [
         "DSL Extensions": [AshK8s.Resource, AshK8s.Operator],
-        "Controller": [AshK8s.Controller, AshK8s.Controller.Behaviour, AshK8s.Controller.Server],
+        Controller: [AshK8s.Controller, AshK8s.Controller.Behaviour, AshK8s.Controller.Server],
         "Data Layer": [AshK8s.DataLayer],
         "Kubernetes Client": [AshK8s.Client, AshK8s.Client.Config, AshK8s.Client.Watch],
         "CRD Generation": [AshK8s.CRD],
-        "Introspection": [AshK8s.Resource.Info, AshK8s.Operator.Info]
+        Introspection: [AshK8s.Resource.Info, AshK8s.Operator.Info]
       ]
     ]
   end

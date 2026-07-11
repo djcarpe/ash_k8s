@@ -61,8 +61,10 @@ defmodule AshK8s.Operator.Supervisor do
             name: op_name,
             namespace: op_namespace,
             client: client,
-            lease_duration: Spark.Dsl.Extension.get_opt(domain, [:operator], :lease_duration, 15_000),
-            renew_deadline: Spark.Dsl.Extension.get_opt(domain, [:operator], :renew_deadline, 10_000),
+            lease_duration:
+              Spark.Dsl.Extension.get_opt(domain, [:operator], :lease_duration, 15_000),
+            renew_deadline:
+              Spark.Dsl.Extension.get_opt(domain, [:operator], :renew_deadline, 10_000),
             retry_period: Spark.Dsl.Extension.get_opt(domain, [:operator], :retry_period, 2_000),
             notify: self()
           )
@@ -78,12 +80,19 @@ defmodule AshK8s.Operator.Supervisor do
           controller: watch.controller,
           domain: domain,
           client: client,
+          watch_namespace: opts[:watch_namespace],
           max_concurrent_reconciles: watch.max_concurrent_reconciles,
           requeue_on_error_delay: watch.requeue_on_error_delay
         )
       end)
 
     children = leader_children ++ controller_children
+
+    :telemetry.execute(
+      [:ash_k8s, :operator, :init],
+      %{watch_count: length(watches)},
+      %{operator: op_name, domain: domain, leader_election: leader_election?}
+    )
 
     Supervisor.init(children, strategy: :one_for_one)
   end

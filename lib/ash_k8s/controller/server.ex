@@ -43,6 +43,10 @@ defmodule AshK8s.Controller.Server do
 
   @impl true
   def init(opts) do
+    # Watch and reconcile tasks are linked (Task.async); trap exits so a
+    # crashing task is handled via :DOWN instead of killing the server.
+    Process.flag(:trap_exit, true)
+
     resource = opts[:resource]
     controller = opts[:controller]
     domain = opts[:domain]
@@ -51,12 +55,15 @@ defmodule AshK8s.Controller.Server do
 
     state = %{
       resource: resource,
+      kind: Info.kind!(resource),
       controller: controller,
       domain: domain,
       client: client,
       watch_opts: watch_opts,
+      watch_namespace: opts[:watch_namespace],
       resource_version: "0",
       queue: :queue.new(),
+      pending: %{},
       active_tasks: %{},
       max_concurrent: opts[:max_concurrent_reconciles] || 1
     }
@@ -65,18 +72,26 @@ defmodule AshK8s.Controller.Server do
     {:ok, state}
   end
 
+  @doc """
+  Resolves the list/watch path for a resource given the configured watch
+  namespace.
+
+  - cluster-scoped resources always watch at the cluster path
+  - `:all` (or `nil`) watches namespaced resources across all namespaces
+  - a namespace string watches that namespace only
+  """
+  @spec watch_path(module(), :all | String.t() | nil) :: String.t()
+  def watch_path(resource, watch_namespace) do
+    case {Info.scope!(resource), watch_namespace} do
+      {:cluster, _} -> Info.api_path!(resource)
+      {:namespaced, ns} when is_binary(ns) -> Info.namespaced_api_path!(resource, ns)
+      {:namespaced, _} -> Info.api_path!(resource)
+    end
+  end
+
   @impl true
   def handle_info(:start_watch, state) do
-    namespace = Client.Config |> struct() |> Map.get(:namespace, "default")
-
-    path =
-      case Info.scope!(state.resource) do
-        :namespaced ->
-          Info.namespaced_api_path!(state.resource, namespace)
-
-        :cluster ->
-          Info.api_path!(state.resource)
-      end
+    path = watch_path(state.resource, state.watch_namespace)
 
     watch_opts = Keyword.merge(state.watch_opts, resource_version: state.resource_version)
 
@@ -102,6 +117,12 @@ defmodule AshK8s.Controller.Server do
 
   def handle_info({:watch_event, {type, raw_object}}, state)
       when type in [:added, :modified, :deleted] do
+    :telemetry.execute(
+      [:ash_k8s, :watch, :event],
+      %{count: 1},
+      %{resource: state.resource, kind: state.kind, type: type}
+    )
+
     key = object_key(raw_object)
     state = enqueue(state, {type, raw_object, key})
     state = drain_queue(state)
@@ -137,6 +158,20 @@ defmodule AshK8s.Controller.Server do
         state = drain_queue(state)
         {:noreply, state}
 
+      {:watch, tasks} ->
+        Logger.warning(
+          "[AshK8s] Watch for #{inspect(state.resource)} failed: #{inspect(reason)} — retrying in 5s"
+        )
+
+        :telemetry.execute(
+          [:ash_k8s, :watch, :failure],
+          %{count: 1},
+          %{resource: state.resource, kind: state.kind, reason: reason}
+        )
+
+        Process.send_after(self(), :start_watch, 5_000)
+        {:noreply, %{state | active_tasks: tasks}}
+
       _ ->
         {:noreply, state}
     end
@@ -152,8 +187,20 @@ defmodule AshK8s.Controller.Server do
 
   # ---- Private helpers ----
 
-  defp enqueue(state, event) do
-    %{state | queue: :queue.in(event, state.queue)}
+  # Events are deduplicated per object key: if an event for the key is
+  # already queued, only the stored payload is refreshed (latest object
+  # wins). Reconciliation is level-based, so collapsing a burst of events
+  # into one pending entry loses nothing — and bounds queue growth when a
+  # feedback loop or watch replay floods a single object.
+  defp enqueue(state, {type, raw_object, key}) do
+    queue =
+      if Map.has_key?(state.pending, key) do
+        state.queue
+      else
+        :queue.in(key, state.queue)
+      end
+
+    %{state | queue: queue, pending: Map.put(state.pending, key, {type, raw_object})}
   end
 
   defp drain_queue(%{active_tasks: tasks, max_concurrent: max} = state) do
@@ -172,52 +219,118 @@ defmodule AshK8s.Controller.Server do
       {:empty, _} ->
         state
 
-      {{:value, {type, raw_object, key}}, queue} ->
-        state = %{state | queue: queue}
+      {{:value, key}, queue} ->
+        {{type, raw_object}, pending} = Map.pop(state.pending, key)
+        state = %{state | queue: queue, pending: pending}
         task = start_reconcile_task(state, type, raw_object, key)
 
         state = %{
           state
           | active_tasks:
-              Map.put(state.active_tasks, task.ref, {:reconcile, key, raw_object, state.controller})
+              Map.put(
+                state.active_tasks,
+                task.ref,
+                {:reconcile, key, raw_object, state.controller}
+              )
         }
 
         drain_queue(state)
     end
   end
 
-  defp start_reconcile_task(state, :deleted, raw_object, key) do
-    Task.async(fn ->
-      if has_finalizer?(raw_object, finalizer_name(state.controller)) do
-        run_finalize(state, raw_object, key)
-      else
-        {:deleted, key}
-      end
-    end)
+  defp start_reconcile_task(_state, :deleted, _raw_object, key) do
+    # The object is gone from the API server. Finalizer-based cleanup (if
+    # any) already ran while the object carried a deletionTimestamp.
+    Task.async(fn -> {:deleted, key} end)
   end
 
-  defp start_reconcile_task(state, _type, raw_object, key) do
-    Task.async(fn ->
-      run_reconcile(state, raw_object, key)
-    end)
+  defp start_reconcile_task(state, type, raw_object, key) do
+    case finalizer_action(state.controller, raw_object) do
+      :finalize ->
+        Task.async(fn -> run_finalize(state, raw_object, key) end)
+
+      :skip_deleted ->
+        Task.async(fn -> {:deleted, key} end)
+
+      :add_finalizer ->
+        Task.async(fn ->
+          case add_finalizer(state, raw_object) do
+            {:ok, _} -> run_reconcile(state, raw_object, key, type)
+            {:error, reason} -> {:error, {:add_finalizer, reason}}
+          end
+        end)
+
+      :reconcile ->
+        Task.async(fn -> run_reconcile(state, raw_object, key, type) end)
+    end
   end
 
-  defp run_reconcile(state, raw_object, _key) do
-    resource_struct = raw_to_struct(state.resource, raw_object)
+  @doc false
+  # Decides how to handle an :added/:modified event with respect to the
+  # controller's finalizer:
+  #
+  #   * object being deleted + our finalizer present  -> :finalize
+  #   * object being deleted, finalizer absent        -> :skip_deleted
+  #   * controller finalizes but finalizer not yet on -> :add_finalizer
+  #   * otherwise                                     -> :reconcile
+  @spec finalizer_action(module(), map()) ::
+          :finalize | :skip_deleted | :add_finalizer | :reconcile
+  def finalizer_action(controller, raw_object) do
+    finalizer = finalizer_name(controller)
 
-    context = %{
-      domain: state.domain,
-      client: state.client,
-      namespace: get_in(raw_object, ["metadata", "namespace"]) || "default",
-      opts: state.watch_opts
-    }
+    cond do
+      get_in(raw_object, ["metadata", "deletionTimestamp"]) ->
+        if has_finalizer?(raw_object, finalizer), do: :finalize, else: :skip_deleted
 
-    state.controller.reconcile(resource_struct, context, [])
+      finalizable?(controller) and not has_finalizer?(raw_object, finalizer) ->
+        :add_finalizer
+
+      true ->
+        :reconcile
+    end
+  end
+
+  defp finalizable?(controller) do
+    Code.ensure_loaded?(controller) and function_exported?(controller, :finalize, 3)
+  end
+
+  @doc false
+  # Public for testability of the emitted telemetry; not part of the API.
+  def run_reconcile(state, raw_object, _key, event_type) do
+    metadata = lifecycle_metadata(state, raw_object) |> Map.put(:event_type, event_type)
+
+    :telemetry.span([:ash_k8s, :reconcile], metadata, fn ->
+      resource_struct = raw_to_struct(state.resource, raw_object)
+
+      context = %{
+        domain: state.domain,
+        client: state.client,
+        namespace: get_in(raw_object, ["metadata", "namespace"]) || "default",
+        event_type: event_type,
+        opts: state.watch_opts
+      }
+
+      result = state.controller.reconcile(resource_struct, context, [])
+      {result, Map.put(metadata, :result, result_kind(result))}
+    end)
   rescue
     e -> {:error, Exception.message(e)}
   end
 
-  defp run_finalize(state, raw_object, key) do
+  @doc false
+  # Public for testability of the emitted telemetry; not part of the API.
+  def run_finalize(state, raw_object, key) do
+    metadata = lifecycle_metadata(state, raw_object)
+
+    :telemetry.span([:ash_k8s, :finalize], metadata, fn ->
+      result = do_run_finalize(state, raw_object, key)
+      {result, Map.put(metadata, :result, result_kind(result))}
+    end)
+  rescue
+    e -> {:error, Exception.message(e)}
+  end
+
+  defp do_run_finalize(state, raw_object, key) do
     resource_struct = raw_to_struct(state.resource, raw_object)
 
     context = %{
@@ -242,7 +355,9 @@ defmodule AshK8s.Controller.Server do
 
   defp handle_reconcile_result(state, :ok, _key, _raw_object, _controller), do: state
   defp handle_reconcile_result(state, {:ok, _}, _key, _raw_object, _controller), do: state
-  defp handle_reconcile_result(state, {:deleted, _deleted_key}, _key, _raw_object, _controller), do: state
+
+  defp handle_reconcile_result(state, {:deleted, _deleted_key}, _key, _raw_object, _controller),
+    do: state
 
   defp handle_reconcile_result(state, {:requeue, delay}, key, raw_object, _controller) do
     schedule_requeue(key, raw_object, delay)
@@ -291,6 +406,23 @@ defmodule AshK8s.Controller.Server do
     if ns, do: "#{ns}/#{name}", else: name
   end
 
+  defp lifecycle_metadata(state, raw_object) do
+    %{
+      resource: state.resource,
+      kind: state[:kind] || Info.kind!(state.resource),
+      controller: state.controller,
+      namespace: get_in(raw_object, ["metadata", "namespace"]) || "default",
+      name: get_in(raw_object, ["metadata", "name"])
+    }
+  end
+
+  defp result_kind(:ok), do: :ok
+  defp result_kind({:ok, _}), do: :ok
+  defp result_kind({:requeue, _}), do: :requeue
+  defp result_kind({:deleted, _}), do: :ok
+  defp result_kind({:error, _}), do: :error
+  defp result_kind(_), do: :unknown
+
   defp finalizer_name(controller) do
     "#{@finalizer_prefix}/#{controller |> Module.split() |> List.last() |> Macro.underscore()}"
   end
@@ -300,13 +432,21 @@ defmodule AshK8s.Controller.Server do
     finalizer in finalizers
   end
 
+  defp add_finalizer(state, raw_object) do
+    finalizer = finalizer_name(state.controller)
+    metadata = raw_object["metadata"] || %{}
+    patch_finalizers(state, metadata, (metadata["finalizers"] || []) ++ [finalizer])
+  end
+
   defp remove_finalizer(state, raw_object, _key) do
     finalizer = finalizer_name(state.controller)
     metadata = raw_object["metadata"] || %{}
-    finalizers = (metadata["finalizers"] || []) -- [finalizer]
+    patch_finalizers(state, metadata, (metadata["finalizers"] || []) -- [finalizer])
+  end
+
+  defp patch_finalizers(state, metadata, finalizers) do
     name = metadata["name"]
     namespace = metadata["namespace"]
-    resource_version = metadata["resourceVersion"]
 
     path =
       case Info.scope!(state.resource) do
@@ -320,7 +460,7 @@ defmodule AshK8s.Controller.Server do
     patch_body = %{
       "metadata" => %{
         "finalizers" => finalizers,
-        "resourceVersion" => resource_version
+        "resourceVersion" => metadata["resourceVersion"]
       }
     }
 

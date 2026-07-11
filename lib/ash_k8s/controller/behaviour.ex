@@ -34,6 +34,7 @@ defmodule AshK8s.Controller.Behaviour do
           domain: module(),
           client: AshK8s.Client.t(),
           namespace: String.t(),
+          event_type: :added | :modified,
           opts: keyword()
         }
 

@@ -52,12 +52,12 @@ defmodule AshK8s.ManagedResources.Transformer do
         data_layer: AshK8s.DataLayer
 
       k8s do
-        group    unquote(entry.group)
-        version  unquote(entry.version)
-        plural   unquote(entry.plural)
-        singular unquote(entry.singular)
-        kind     unquote(entry.kind)
-        scope    unquote(entry.scope)
+        group(unquote(entry.group))
+        version(unquote(entry.version))
+        plural(unquote(entry.plural))
+        singular(unquote(entry.singular))
+        kind unquote(entry.kind)
+        scope(unquote(entry.scope))
 
         unquote(columns_ast)
       end
@@ -75,13 +75,13 @@ defmodule AshK8s.ManagedResources.Transformer do
           |> put_if(:description, col.description)
 
         quote do
-          column unquote(col.name), unquote(opts)
+          column(unquote(col.name), unquote(opts))
         end
       end)
 
     quote do
       printer_columns do
-        unquote_splicing(column_exprs)
+        (unquote_splicing(column_exprs))
       end
     end
   end

@@ -37,9 +37,16 @@ defmodule AshK8s.Resource.Transformers.InjectBaseSchema do
     {:status, :map, [default: %{}, public?: true]},
     {:labels, :map, [default: %{}, public?: true]},
     {:annotations, :map, [default: %{}, public?: true]},
+    {:owner_references, {:array, :map}, [default: [], public?: true]},
+    # Top-level fields for data-bearing kinds (ConfigMap/Secret) which have no
+    # `spec`. Nil by default and omitted from the request body when unset.
+    {:data, :map, [public?: true]},
+    {:string_data, :map, [public?: true]},
+    {:type, :string, [public?: true]},
     {:resource_version, :string, [public?: true]},
     {:uid, :string, [public?: true]},
-    {:generation, :integer, [public?: true]}
+    {:generation, :integer, [public?: true]},
+    {:creation_timestamp, :string, [public?: true]}
   ]
 
   defp inject_attributes(dsl_state) do
@@ -52,11 +59,22 @@ defmodule AshK8s.Resource.Transformers.InjectBaseSchema do
   end
 
   defp inject_actions(dsl_state) do
-    with {:ok, dsl_state} <- Builder.add_new_action(dsl_state, :read, :read),
-         {:ok, dsl_state} <- Builder.add_new_action(dsl_state, :destroy, :destroy),
+    with {:ok, dsl_state} <- Builder.add_new_action(dsl_state, :read, :read, primary?: true),
+         {:ok, dsl_state} <-
+           Builder.add_new_action(dsl_state, :destroy, :destroy, primary?: true),
          {:ok, dsl_state} <-
            Builder.add_new_action(dsl_state, :create, :create,
-             accept: [:name, :namespace, :spec, :labels, :annotations],
+             accept: [
+               :name,
+               :namespace,
+               :spec,
+               :labels,
+               :annotations,
+               :owner_references,
+               :data,
+               :string_data,
+               :type
+             ],
              primary?: true
            ),
          {:ok, dsl_state} <-
