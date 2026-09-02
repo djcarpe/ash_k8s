@@ -7,6 +7,8 @@ defmodule AshK8s.Client.Watch do
   the latest `resourceVersion` on network errors or `Gone` responses.
   """
 
+  require Logger
+
   alias AshK8s.Client.Config
 
   @type event_type :: :added | :modified | :deleted | :bookmark
@@ -58,7 +60,8 @@ defmodule AshK8s.Client.Watch do
       {:ok, %Req.Response{status: status, body: body}} ->
         raise "Kubernetes watch error #{status}: #{inspect(body)}"
 
-      {:error, _reason} ->
+      {:error, reason} ->
+        Logger.warning("Kubernetes watch connection failed: #{inspect(reason)}")
         Process.sleep(2_000)
         {[], {config, path, opts, resource_version, nil}}
     end
@@ -131,18 +134,20 @@ defmodule AshK8s.Client.Watch do
     apply_auth_and_tls(base, config)
   end
 
-  defp apply_auth_and_tls(req, %{auth: {:bearer, token}, ca_cert: ca}) when is_binary(ca) do
+  defp apply_auth_and_tls(req, %{auth: {kind, _value} = auth, ca_cert: ca})
+       when kind in [:bearer, :bearer_file] and is_binary(ca) do
     certs = decode_certs(ca)
 
     req
     |> Req.merge(connect_options: [transport_opts: [cacerts: certs]])
-    |> Req.merge(headers: [{"authorization", "Bearer #{token}"}])
+    |> Config.apply_auth(auth)
   end
 
-  defp apply_auth_and_tls(req, %{auth: {:bearer, token}, ca_cert: nil}) do
+  defp apply_auth_and_tls(req, %{auth: {kind, _value} = auth, ca_cert: nil})
+       when kind in [:bearer, :bearer_file] do
     req
     |> Req.merge(connect_options: [transport_opts: [verify: :verify_none]])
-    |> Req.merge(headers: [{"authorization", "Bearer #{token}"}])
+    |> Config.apply_auth(auth)
   end
 
   defp apply_auth_and_tls(req, %{auth: {:cert, cert_pem, key_pem}, ca_cert: ca}) do

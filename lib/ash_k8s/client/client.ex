@@ -156,7 +156,7 @@ defmodule AshK8s.Client do
       )
 
     base = apply_tls(base, ca_cert, auth)
-    apply_auth(base, auth)
+    Config.apply_auth(base, auth)
   end
 
   defp apply_tls(req, ca_cert, {:cert, client_cert, client_key}) when is_binary(ca_cert) do
@@ -182,12 +182,6 @@ defmodule AshK8s.Client do
   defp apply_tls(req, nil, _auth) do
     Req.merge(req, connect_options: [transport_opts: [verify: :verify_none]])
   end
-
-  defp apply_auth(req, {:bearer, token}) do
-    Req.merge(req, headers: [{"authorization", "Bearer #{token}"}])
-  end
-
-  defp apply_auth(req, _), do: req
 
   defp handle_response({:ok, %Req.Response{status: status, body: body}})
        when status in 200..299 do

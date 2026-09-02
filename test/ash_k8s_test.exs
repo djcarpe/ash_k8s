@@ -133,5 +133,62 @@ defmodule AshK8sTest do
     test "from_file returns error for nonexistent path" do
       assert {:error, _} = AshK8s.Client.Config.from_file("/nonexistent/kubeconfig")
     end
+
+    test "reloads a bearer token file for every request" do
+      token_path =
+        Path.join(System.tmp_dir!(), "ash-k8s-token-#{System.unique_integer([:positive])}")
+
+      on_exit(fn -> File.rm(token_path) end)
+      File.write!(token_path, "token-a")
+      test_pid = self()
+
+      adapter = fn request ->
+        send(test_pid, {:authorization, Req.Request.get_header(request, "authorization")})
+
+        {request,
+         Req.Response.new(
+           status: 200,
+           headers: [{"content-type", "application/json"}],
+           body: "{}"
+         )}
+      end
+
+      config = %AshK8s.Client.Config{
+        host: "https://k8s.test",
+        auth: {:bearer_file, token_path}
+      }
+
+      client = AshK8s.Client.new(config)
+      client = %{client | req: Req.merge(client.req, adapter: adapter)}
+
+      assert {:ok, %{}} = AshK8s.Client.get(client, "/api/v1/namespaces")
+      assert_receive {:authorization, ["Bearer token-a"]}
+
+      File.write!(token_path, "token-b")
+
+      assert {:ok, %{}} = AshK8s.Client.get(client, "/api/v1/namespaces")
+      assert_receive {:authorization, ["Bearer token-b"]}
+
+      File.write!(token_path, " \n")
+
+      assert {:error, %RuntimeError{message: empty_message}} =
+               AshK8s.Client.get(client, "/api/v1/namespaces")
+
+      assert empty_message =~ "Kubernetes bearer token file is empty"
+      File.rm!(token_path)
+
+      assert {:error, %RuntimeError{message: missing_message}} =
+               AshK8s.Client.get(client, "/api/v1/namespaces")
+
+      assert missing_message =~ "Could not read Kubernetes bearer token file"
+    end
+
+    test "preserves static bearer token authentication" do
+      request =
+        Req.new()
+        |> AshK8s.Client.Config.apply_auth({:bearer, "static-token"})
+
+      assert Req.Request.get_header(request, "authorization") == ["Bearer static-token"]
+    end
   end
 end

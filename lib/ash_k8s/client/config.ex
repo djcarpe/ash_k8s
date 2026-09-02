@@ -13,7 +13,8 @@ defmodule AshK8s.Client.Config do
   @in_cluster_namespace_path "/var/run/secrets/kubernetes.io/serviceaccount/namespace"
   @in_cluster_host "https://kubernetes.default.svc"
 
-  @type auth :: {:bearer, String.t()} | {:cert, binary(), binary()}
+  @type auth ::
+          {:bearer, String.t()} | {:bearer_file, Path.t()} | {:cert, binary(), binary()}
 
   @type t :: %__MODULE__{
           host: String.t(),
@@ -44,18 +45,55 @@ defmodule AshK8s.Client.Config do
   @doc "Returns a config for running inside a Kubernetes pod."
   @spec in_cluster() :: {:ok, t()} | {:error, term()}
   def in_cluster do
-    with {:ok, token} <- File.read(@in_cluster_token_path),
+    with {:ok, _token} <- File.read(@in_cluster_token_path),
          {:ok, ca} <- File.read(@in_cluster_ca_path),
          {:ok, ns} <- File.read(@in_cluster_namespace_path) do
       {:ok,
        %__MODULE__{
          host: @in_cluster_host,
-         auth: {:bearer, String.trim(token)},
+         auth: {:bearer_file, @in_cluster_token_path},
          ca_cert: ca,
          namespace: String.trim(ns)
        }}
     end
   end
+
+  @doc false
+  @spec apply_auth(Req.Request.t(), auth() | nil) :: Req.Request.t()
+  def apply_auth(request, {:bearer_file, path}) do
+    Req.Request.append_request_steps(
+      request,
+      ash_k8s_bearer_file: fn request ->
+        case File.read(path) do
+          {:ok, token} ->
+            case String.trim(token) do
+              "" ->
+                Req.Request.halt(
+                  request,
+                  RuntimeError.exception("Kubernetes bearer token file is empty: #{path}")
+                )
+
+              token ->
+                Req.Request.put_header(request, "authorization", "Bearer #{token}")
+            end
+
+          {:error, reason} ->
+            Req.Request.halt(
+              request,
+              RuntimeError.exception(
+                "Could not read Kubernetes bearer token file #{path}: #{:file.format_error(reason)}"
+              )
+            )
+        end
+      end
+    )
+  end
+
+  def apply_auth(request, {:bearer, token}) do
+    Req.Request.put_header(request, "authorization", "Bearer #{token}")
+  end
+
+  def apply_auth(request, _auth), do: request
 
   @doc """
   Parses a kubeconfig file and returns a config for the given or current context.
@@ -110,7 +148,7 @@ defmodule AshK8s.Client.Config do
             {:bearer, token}
 
           token_file = user_info["tokenFile"] ->
-            {:bearer, File.read!(token_file)}
+            {:bearer_file, token_file}
 
           cert_data = user_info["client-certificate-data"] ->
             key_data = user_info["client-key-data"]
